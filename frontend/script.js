@@ -1,7 +1,21 @@
-// Dynamic API Base URL
-const API_BASE_URL = (window.location.origin.includes('localhost') || window.location.origin.includes('127.0.0.1'))
-    ? 'http://localhost:3000'
-    : window.location.origin + '/api';
+function getApiBaseUrl() {
+    try {
+        if (
+            !window.location.origin ||
+            window.location.origin === 'null' ||
+            window.location.protocol === 'file:' ||
+            window.location.hostname === 'localhost' ||
+            window.location.hostname === '127.0.0.1' ||
+            window.location.port !== ''
+        ) {
+            return 'http://localhost:3000';
+        }
+        return window.location.origin.replace(/\/+$/, '') + '/api';
+    } catch (_) {
+        return 'http://localhost:3000';
+    }
+}
+const API_BASE_URL = getApiBaseUrl();
 
 // Authentication Check
 function checkAuth() {
