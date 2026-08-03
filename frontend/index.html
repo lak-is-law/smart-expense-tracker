@@ -7,8 +7,6 @@
     <link rel="stylesheet" href="styles.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    <!-- TensorFlow.js for AI predictions -->
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest"></script>
 </head>
 <body>
     <!-- Navigation -->
@@ -36,6 +34,12 @@
                         <i class="fas fa-leaf"></i>
                     </button>
                 </div>
+                <div class="user-profile" id="userProfile" style="display: flex; align-items: center; gap: 0.75rem; margin-left: 1rem;">
+                    <span id="userNameDisplay" style="font-size: 0.85rem; font-weight: 500; color: #94a3b8;">User</span>
+                    <button id="logoutBtn" class="theme-btn" title="Logout" style="background: rgba(239, 68, 68, 0.2); color: #ef4444;" onclick="handleLogout()">
+                        <i class="fas fa-sign-out-alt"></i>
+                    </button>
+                </div>
             </div>
         </div>
     </nav>
@@ -61,7 +65,7 @@
             </div>
             <button class="cta-button" onclick="showAddExpenseModal()">
                 <i class="fas fa-plus"></i>
-                Add Your First Expense
+                Add Expense
             </button>
         </div>
     </section>
@@ -72,7 +76,7 @@
         <section class="content-section active" id="dashboard">
             <div class="warning-banner" id="warningBanner" style="display: none;">
                 <i class="fas fa-exclamation-triangle"></i>
-                <span>Monthly spending exceeds ₹5000! Consider reducing expenses.</span>
+                <span id="warningText">Monthly spending exceeds budget limit! Consider reducing expenses.</span>
             </div>
 
             <div class="stats-grid">
@@ -98,10 +102,13 @@
                     </div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-icon"><i class="fas fa-percentage"></i></div>
+                    <div class="stat-icon"><i class="fas fa-wallet"></i></div>
                     <div class="stat-content">
-                        <h3 class="stat-value" id="budgetProgress">0%</h3>
-                        <p class="stat-label">Budget Used</p>
+                        <div style="display: flex; align-items: center; justify-content: space-between;">
+                            <h3 class="stat-value" id="budgetProgress">0%</h3>
+                            <button onclick="promptSetBudget()" style="background:none; border:none; color:#38bdf8; cursor:pointer; font-size:0.8rem;"><i class="fas fa-edit"></i> Edit</button>
+                        </div>
+                        <p class="stat-label" id="budgetLimitLabel">Limit: ₹5000</p>
                     </div>
                 </div>
             </div>
@@ -120,7 +127,7 @@
                         Monthly Trend
                     </h3>
                     <div class="trend-chart" id="trendChart">
-                        <canvas id="trendCanvas" width="400" height="200"></canvas>
+                        <div id="trendChartList" style="padding: 1rem 0;"></div>
                     </div>
                 </div>
             </div>
@@ -210,12 +217,14 @@
                         <option value="Food">Food</option>
                         <option value="Travel">Travel</option>
                         <option value="Shopping">Shopping</option>
+                        <option value="Bills">Bills</option>
+                        <option value="Entertainment">Entertainment</option>
                         <option value="Other">Other</option>
                     </select>
                 </div>
                 <div class="form-group">
                     <label for="expenseAmount">Amount (₹)</label>
-                    <input type="number" id="expenseAmount" name="amount" min="0" step="0.01" required>
+                    <input type="number" id="expenseAmount" name="amount" min="1" step="any" required>
                 </div>
                 <div class="form-group">
                     <label for="expenseDescription">Description</label>

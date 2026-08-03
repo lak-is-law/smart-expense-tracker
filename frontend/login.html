@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login & Signup - Smart Expense Tracker</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <!-- Google Identity Services -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <style>
+        body {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            background: linear-gradient(135deg, #1e1e2f 0%, #0f172a 100%);
+            padding: 2rem;
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            color: #f8fafc;
+        }
+        .login-card {
+            max-width: 440px;
+            width: 100%;
+            padding: 2.5rem;
+            border-radius: 16px;
+            background: rgba(30, 41, 59, 0.85);
+            backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+        }
+        .brand {
+            display: flex;
+            gap: 0.75rem;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 1.5rem;
+            color: #38bdf8;
+            font-size: 1.4rem;
+            font-weight: 700;
+        }
+        .brand i {
+            font-size: 1.8rem;
+        }
+        .login-title {
+            text-align: center;
+            margin: 0 0 0.5rem 0;
+            font-size: 1.6rem;
+            font-weight: 700;
+        }
+        .login-sub {
+            text-align: center;
+            margin: 0 0 1.5rem 0;
+            color: #94a3b8;
+            font-size: 0.9rem;
+        }
+        .form-group {
+            margin-bottom: 1.25rem;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+            font-size: 0.85rem;
+            color: #cbd5e1;
+        }
+        .form-group input {
+            width: 100%;
+            padding: 0.8rem 1rem;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 8px;
+            background: rgba(15, 23, 42, 0.6);
+            color: #fff;
+            font-size: 0.95rem;
+            box-sizing: border-box;
+            transition: all 0.2s ease;
+        }
+        .form-group input:focus {
+            outline: none;
+            border-color: #38bdf8;
+            box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.2);
+        }
+        .submit-btn {
+            width: 100%;
+            padding: 0.85rem;
+            background: linear-gradient(135deg, #38bdf8 0%, #2563eb 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
+            margin-top: 0.5rem;
+        }
+        .submit-btn:hover {
+            opacity: 0.95;
+            transform: translateY(-1px);
+        }
+        .submit-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        .divider {
+            text-align: center;
+            margin: 1.5rem 0;
+            position: relative;
+            color: #64748b;
+            font-size: 0.85rem;
+        }
+        .divider::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 50%;
+            width: 100%;
+            height: 1px;
+            background: rgba(255, 255, 255, 0.1);
+        }
+        .divider span {
+            background: #1e293b;
+            padding: 0 0.75rem;
+            position: relative;
+        }
+        .google-btn-wrapper {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 1.5rem;
+        }
+        .alert {
+            padding: 0.75rem 1rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+            font-size: 0.85rem;
+            display: none;
+        }
+        .alert-error {
+            background: rgba(239, 68, 68, 0.2);
+            border: 1px solid rgba(239, 68, 68, 0.4);
+            color: #fca5a5;
+        }
+        .alert-success {
+            background: rgba(34, 197, 94, 0.2);
+            border: 1px solid rgba(34, 197, 94, 0.4);
+            color: #86efac;
+        }
+        .switch-link {
+            text-align: center;
+            font-size: 0.85rem;
+            color: #94a3b8;
+        }
+        .switch-link a {
+            color: #38bdf8;
+            text-decoration: none;
+            font-weight: 500;
+            margin-left: 0.25rem;
+        }
+        .switch-link a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <!-- Sign In Card -->
+    <div class="login-card" id="loginBox">
+        <div class="brand">
+            <i class="fas fa-chart-line"></i>
+            <span>Smart Expense Tracker</span>
+        </div>
+        <h2 class="login-title">Welcome Back</h2>
+        <p class="login-sub">Sign in to your personal dashboard</p>
+
+        <div class="alert alert-error" id="loginError"></div>
+
+        <form id="loginForm">
+            <div class="form-group">
+                <label for="loginEmail"><i class="fas fa-envelope"></i> Email Address</label>
+                <input type="email" id="loginEmail" required placeholder="you@example.com">
+            </div>
+            <div class="form-group">
+                <label for="loginPassword"><i class="fas fa-lock"></i> Password</label>
+                <input type="password" id="loginPassword" required placeholder="••••••••">
+            </div>
+            <button type="submit" class="submit-btn" id="loginBtn">
+                <i class="fas fa-sign-in-alt"></i> Sign In
+            </button>
+        </form>
+
+        <div class="divider">
+            <span>OR</span>
+        </div>
+
+        <div class="google-btn-wrapper">
+            <div id="g_id_onload"
+                 data-client_id="941885758128-8jqljgv97qt7mtnkl9oi15qu8nglamci.apps.googleusercontent.com"
+                 data-callback="handleGoogleSignIn"
+                 data-auto_prompt="false"></div>
+            <div class="g_id_signin" 
+                 data-type="standard" 
+                 data-size="large" 
+                 data-theme="outline" 
+                 data-text="signin_with" 
+                 data-shape="rectangular" 
+                 data-logo_alignment="left"></div>
+        </div>
+
+        <div class="switch-link">
+            <span>Don't have an account?</span>
+            <a href="#" onclick="toggleAuthMode(true)">Create Account</a>
+        </div>
+    </div>
+
+    <!-- Sign Up Card -->
+    <div class="login-card" id="signupBox" style="display: none;">
+        <div class="brand">
+            <i class="fas fa-chart-line"></i>
+            <span>Smart Expense Tracker</span>
+        </div>
+        <h2 class="login-title">Create Account</h2>
+        <p class="login-sub">Start tracking your expenses with AI insights</p>
+
+        <div class="alert alert-error" id="signupError"></div>
+        <div class="alert alert-success" id="signupSuccess"></div>
+
+        <form id="signupForm">
+            <div class="form-group">
+                <label for="signupName"><i class="fas fa-user"></i> Full Name</label>
+                <input type="text" id="signupName" required placeholder="John Doe">
+            </div>
+            <div class="form-group">
+                <label for="signupEmail"><i class="fas fa-envelope"></i> Email Address</label>
+                <input type="email" id="signupEmail" required placeholder="you@example.com">
+            </div>
+            <div class="form-group">
+                <label for="signupPassword"><i class="fas fa-lock"></i> Password (min 6 characters)</label>
+                <input type="password" id="signupPassword" required minlength="6" placeholder="••••••••">
+            </div>
+            <button type="submit" class="submit-btn" id="signupBtn">
+                <i class="fas fa-user-plus"></i> Sign Up
+            </button>
+        </form>
+
+        <div class="divider">
+            <span>OR</span>
+        </div>
+
+        <div class="google-btn-wrapper">
+            <div id="g_id_onload_signup"
+                 data-client_id="941885758128-8jqljgv97qt7mtnkl9oi15qu8nglamci.apps.googleusercontent.com"
+                 data-callback="handleGoogleSignIn"
+                 data-auto_prompt="false"></div>
+            <div class="g_id_signin" 
+                 data-type="standard" 
+                 data-size="large" 
+                 data-theme="outline" 
+                 data-text="signup_with" 
+                 data-shape="rectangular" 
+                 data-logo_alignment="left"></div>
+        </div>
+
+        <div class="switch-link">
+            <span>Already have an account?</span>
+            <a href="#" onclick="toggleAuthMode(false)">Sign In</a>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = (window.location.origin.includes('localhost') || window.location.origin.includes('127.0.0.1'))
+            ? 'http://localhost:3000'
+            : window.location.origin + '/api';
+
+        function showAlert(id, message, isSuccess = false) {
+            const el = document.getElementById(id);
+            el.textContent = message;
+            el.style.display = 'block';
+            setTimeout(() => { el.style.display = 'none'; }, 5000);
+        }
+
+        function toggleAuthMode(showSignup) {
+            document.getElementById('loginBox').style.display = showSignup ? 'none' : 'block';
+            document.getElementById('signupBox').style.display = showSignup ? 'block' : 'none';
+        }
+
+        // Login Handler
+        document.getElementById('loginForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const btn = document.getElementById('loginBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Signing In...';
+
+            const email = document.getElementById('loginEmail').value;
+            const password = document.getElementById('loginPassword').value;
+
+            try {
+                const res = await fetch(`${API_BASE}/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password })
+                });
+
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Login failed');
+
+                localStorage.setItem('authToken', data.token);
+                localStorage.setItem('authUser', JSON.stringify(data.user));
+                window.location.href = 'index.html';
+            } catch (err) {
+                showAlert('loginError', err.message);
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-sign-in-alt"></i> Sign In';
+            }
+        });
+
+        // Signup Handler
+        document.getElementById('signupForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const btn = document.getElementById('signupBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating Account...';
+
+            const name = document.getElementById('signupName').value;
+            const email = document.getElementById('signupEmail').value;
+            const password = document.getElementById('signupPassword').value;
+
+            try {
+                const res = await fetch(`${API_BASE}/auth/signup`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, email, password })
+                });
+
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Signup failed');
+
+                showAlert('signupSuccess', 'Account created! Redirecting...', true);
+                localStorage.setItem('authToken', data.token);
+                localStorage.setItem('authUser', JSON.stringify(data.user));
+                setTimeout(() => { window.location.href = 'index.html'; }, 1000);
+            } catch (err) {
+                showAlert('signupError', err.message);
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-user-plus"></i> Sign Up';
+            }
+        });
+
+        // Google Sign In Handler
+        async function handleGoogleSignIn(response) {
+            if (!response || !response.credential) {
+                showAlert('loginError', 'Google Sign-in failed. Please try again.');
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/auth/google`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ idToken: response.credential })
+                });
+
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Google verification failed');
+
+                localStorage.setItem('authToken', data.token);
+                localStorage.setItem('authUser', JSON.stringify(data.user));
+                window.location.href = 'index.html';
+            } catch (err) {
+                showAlert('loginError', err.message);
+            }
+        }
+
+        // Redirect if already logged in
+        if (localStorage.getItem('authToken')) {
+            window.location.href = 'index.html';
+        }
+    </script>
+</body>
+</html>
