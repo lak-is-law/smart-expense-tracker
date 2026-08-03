@@ -12,22 +12,29 @@ const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
+// CORS setup
 app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.use(bodyParser.json());
 
-// Normalize /api prefix for Vercel serverless deployment
+// Body parser
+app.use(bodyParser.json({ limit: '10mb' }));
+app.use(bodyParser.urlencoded({ extended: true }));
+
+// Request Logger
 app.use((req, res, next) => {
-    if (req.url.startsWith('/api/')) {
-        req.url = req.url.slice(4);
-    } else if (req.url === '/api') {
-        req.url = '/';
-    }
-    console.log(`${new Date().toISOString()} - ${req.method} ${req.path} (Original: ${req.originalUrl || req.url})`);
+    const start = Date.now();
+    const cleanBody = req.body ? { ...req.body } : {};
+    if (cleanBody.password) cleanBody.password = '[REDACTED]';
+    if (cleanBody.idToken) cleanBody.idToken = '[ID_TOKEN_TRUNCATED]';
+
+    res.on('finish', () => {
+        const duration = Date.now() - start;
+        console.log(`[API] ${req.method} ${req.originalUrl || req.url} -> Status: ${res.statusCode} (${duration}ms)`);
+    });
+
     next();
 });
 
@@ -36,7 +43,7 @@ async function verifyGoogleIdToken(idToken) {
     try {
         const url = `https://oauth2.googleapis.com/tokeninfo?id_token=${idToken}`;
         const { data } = await axios.get(url);
-        if (!data || !data.sub) throw new Error('Invalid Google token');
+        if (!data || !data.sub) throw new Error('Invalid Google token payload');
         return { userId: data.sub, email: data.email, name: data.name, picture: data.picture };
     } catch (err) {
         const detail = err?.response?.data?.error_description || err?.response?.data || err.message;
@@ -47,28 +54,30 @@ async function verifyGoogleIdToken(idToken) {
 }
 
 function createJwt(user) {
-    return jwt.sign({ userId: user.id || user.userId, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+    const userId = user.id || user.userId;
+    return jwt.sign({ userId, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
 }
 
 function authenticate(req, res, next) {
     const auth = req.headers.authorization || '';
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
-    if (!token) return res.status(401).json({ error: 'Unauthorized' });
+    if (!token) {
+        return res.status(401).json({ success: false, error: 'Unauthorized: missing authentication token', code: 'UNAUTHORIZED' });
+    }
     try {
         const payload = jwt.verify(token, JWT_SECRET);
         req.user = payload;
         next();
     } catch (_) {
-        return res.status(401).json({ error: 'Invalid token' });
+        return res.status(401).json({ success: false, error: 'Invalid or expired token', code: 'INVALID_TOKEN' });
     }
 }
 
-// Simple AI prediction function
+// AI prediction function
 function predictNextMonth(monthlyTotals) {
-    if (monthlyTotals.length < 2) return 0;
-    
-    const recent = monthlyTotals[0].total;
-    const previous = monthlyTotals[1].total;
+    if (!monthlyTotals || monthlyTotals.length < 2) return 0;
+    const recent = monthlyTotals[0]?.total || 0;
+    const previous = monthlyTotals[1]?.total || 0;
     const trend = recent - previous;
     return Math.max(0, recent + trend);
 }
@@ -81,24 +90,25 @@ function generateInsights(expenses, categoryTotals, monthlyTotals) {
         anomalies: []
     };
 
-    if (categoryTotals.length > 0) {
-        const total = categoryTotals.reduce((sum, cat) => sum + cat.total, 0);
+    if (categoryTotals && categoryTotals.length > 0) {
+        const total = categoryTotals.reduce((sum, cat) => sum + (parseFloat(cat.total) || 0), 0);
         const highest = categoryTotals[0];
-        const percentage = (highest.total / total) * 100;
-        
-        if (percentage > 50) {
-            insights.recommendations.push(
-                `Consider reducing ${highest.category} spending (${percentage.toFixed(1)}% of total)`
-            );
+        if (total > 0 && highest) {
+            const percentage = (parseFloat(highest.total) / total) * 100;
+            if (percentage > 50) {
+                insights.recommendations.push(
+                    `Consider reducing ${highest.category} spending (${percentage.toFixed(1)}% of total)`
+                );
+            }
         }
     }
 
-    if (expenses.length > 0) {
-        const amounts = expenses.map(exp => exp.amount);
+    if (expenses && expenses.length > 0) {
+        const amounts = expenses.map(exp => parseFloat(exp.amount) || 0);
         const avg = amounts.reduce((sum, amt) => sum + amt, 0) / amounts.length;
         const threshold = avg * 2;
         
-        const anomalies = expenses.filter(exp => exp.amount > threshold);
+        const anomalies = expenses.filter(exp => (parseFloat(exp.amount) || 0) > threshold);
         insights.anomalies = anomalies.map(exp => ({
             date: exp.date,
             amount: exp.amount,
@@ -109,51 +119,103 @@ function generateInsights(expenses, categoryTotals, monthlyTotals) {
     return insights;
 }
 
-// Auth routes
-app.post('/auth/signup', async (req, res) => {
+// ==========================================
+// API Router (Mounted on both /api and /)
+// ==========================================
+const apiRouter = express.Router();
+
+// Health check
+apiRouter.get('/health', (req, res) => {
+    res.json({ 
+        success: true,
+        status: 'OK', 
+        message: 'Todar API is active',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+    });
+});
+
+// Auth Routes
+apiRouter.post('/auth/signup', async (req, res) => {
     try {
-        const { name, email, password } = req.body;
+        const { name, email, password } = req.body || {};
         
-        if (!name || !email || !password) {
-            return res.status(400).json({ error: 'Name, email, and password are required' });
+        if (!name || !name.trim() || !email || !email.trim() || !password) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Full name, email address, and password are all required.',
+                code: 'MISSING_FIELDS' 
+            });
         }
 
-        if (!emailValidator.validate(email)) {
-            return res.status(400).json({ error: 'Invalid email format' });
+        const trimmedEmail = email.trim().toLowerCase();
+        const trimmedName = name.trim();
+
+        if (!emailValidator.validate(trimmedEmail)) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Please enter a valid email address format.',
+                code: 'INVALID_EMAIL' 
+            });
         }
 
         if (password.length < 6) {
-            return res.status(400).json({ error: 'Password must be at least 6 characters long' });
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Password must be at least 6 characters long.',
+                code: 'PASSWORD_TOO_SHORT' 
+            });
         }
 
-        const existingUser = await dbOperations.getUserByEmail(email);
+        const existingUser = await dbOperations.getUserByEmail(trimmedEmail);
         if (existingUser) {
-            return res.status(409).json({ error: 'User with this email already exists' });
+            return res.status(409).json({ 
+                success: false, 
+                error: `An account with email ${trimmedEmail} is already registered.`,
+                code: 'USER_EXISTS' 
+            });
         }
 
         const passwordHash = await bcrypt.hash(password, 10);
         const userId = 'usr_' + Date.now() + Math.floor(Math.random() * 1000);
         
-        const user = await dbOperations.createUser({
+        const created = await dbOperations.createUser({
             userId,
-            email,
-            name,
+            email: trimmedEmail,
+            name: trimmedName,
             passwordHash
         });
 
-        const token = createJwt(user);
-        res.status(201).json({ token, user: { userId: user.userId, email: user.email, name: user.name }, message: 'Account created successfully' });
+        const token = createJwt(created);
+        return res.status(201).json({
+            success: true,
+            token,
+            user: {
+                userId: created.userId || created.id,
+                email: created.email,
+                name: created.name
+            },
+            message: 'Account created successfully'
+        });
     } catch (error) {
         console.error('Signup error:', error);
-        res.status(500).json({ error: error.message || 'Signup failed' });
+        return res.status(500).json({ 
+            success: false, 
+            error: error.message || 'An unexpected error occurred during signup.',
+            code: 'SIGNUP_FAILED' 
+        });
     }
 });
 
-app.post('/auth/login', async (req, res) => {
+apiRouter.post('/auth/login', async (req, res) => {
     try {
-        const { email, password } = req.body;
-        if (!email || !password) {
-            return res.status(400).json({ error: 'Email and password are required', code: 'MISSING_FIELDS' });
+        const { email, password } = req.body || {};
+        if (!email || !email.trim() || !password) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Both email address and password are required.',
+                code: 'MISSING_FIELDS' 
+            });
         }
 
         const trimmedEmail = email.trim().toLowerCase();
@@ -161,7 +223,8 @@ app.post('/auth/login', async (req, res) => {
         
         if (!user) {
             return res.status(404).json({ 
-                error: 'No account found with this email address. Please check your spelling or create a new account.', 
+                success: false,
+                error: `No account found with ${trimmedEmail}. Please check spelling or create an account.`, 
                 code: 'USER_NOT_FOUND',
                 email: trimmedEmail
             });
@@ -169,7 +232,8 @@ app.post('/auth/login', async (req, res) => {
 
         if (!user.password_hash) {
             return res.status(400).json({ 
-                error: 'This email is linked to Google Sign-In. Please click "Sign in with Google" below.', 
+                success: false,
+                error: 'This account is linked with Google Sign-In. Please use the Google button below.', 
                 code: 'GOOGLE_AUTH_REQUIRED' 
             });
         }
@@ -177,23 +241,38 @@ app.post('/auth/login', async (req, res) => {
         const isMatch = await bcrypt.compare(password, user.password_hash);
         if (!isMatch) {
             return res.status(401).json({ 
-                error: 'Incorrect password. Please double-check your password and try again.', 
+                success: false,
+                error: 'Incorrect password. Please double-check your credentials and try again.', 
                 code: 'INVALID_PASSWORD' 
             });
         }
 
         const token = createJwt(user);
-        res.json({ token, user: { userId: user.id, email: user.email, name: user.name } });
+        return res.json({
+            success: true,
+            token,
+            user: {
+                userId: user.id || user.userId,
+                email: user.email,
+                name: user.name
+            }
+        });
     } catch (error) {
         console.error('Login error:', error);
-        res.status(500).json({ error: error.message || 'Login failed. Please try again.' });
+        return res.status(500).json({ 
+            success: false, 
+            error: error.message || 'Login failed. Please try again.',
+            code: 'LOGIN_FAILED' 
+        });
     }
 });
 
-app.post('/auth/google', async (req, res) => {
+apiRouter.post('/auth/google', async (req, res) => {
     try {
-        const { idToken } = req.body;
-        if (!idToken) return res.status(400).json({ error: 'Missing idToken' });
+        const { idToken } = req.body || {};
+        if (!idToken) {
+            return res.status(400).json({ success: false, error: 'Missing Google ID token', code: 'MISSING_TOKEN' });
+        }
         
         const googleUser = await verifyGoogleIdToken(idToken);
         let user = await dbOperations.getUserByEmail(googleUser.email);
@@ -210,178 +289,184 @@ app.post('/auth/google', async (req, res) => {
         }
 
         const token = createJwt(user);
-        res.json({ token, user: { userId: user.id, email: user.email, name: user.name } });
+        return res.json({
+            success: true,
+            token,
+            user: {
+                userId: user.id || user.userId,
+                email: user.email,
+                name: user.name
+            }
+        });
     } catch (error) {
+        console.error('Google auth error:', error);
         const status = error.status || 401;
-        res.status(status).json({ error: error.message || 'Google authentication failed' });
+        return res.status(status).json({ 
+            success: false, 
+            error: error.message || 'Google authentication failed.',
+            code: 'GOOGLE_AUTH_FAILED' 
+        });
     }
 });
 
-// API Routes
-app.post('/add-expense', authenticate, async (req, res) => {
+// Expense Routes
+apiRouter.post('/add-expense', authenticate, async (req, res) => {
     try {
-        const { date, category, amount, description } = req.body;
+        const { date, category, amount, description } = req.body || {};
         
-        if (!date || !category || !amount || amount <= 0) {
-            return res.status(400).json({ error: 'Invalid data: date, category, and valid amount required' });
+        if (!date || !category || !amount || parseFloat(amount) <= 0) {
+            return res.status(400).json({ success: false, error: 'Valid date, category, and positive amount are required.' });
         }
 
         const expense = await dbOperations.addExpense({
-            date, category, amount: parseFloat(amount), description: description || '', user_id: req.user.userId
+            date,
+            category,
+            amount: parseFloat(amount),
+            description: description || '',
+            user_id: req.user.userId
         });
 
-        res.status(201).json({ message: 'Expense added', expense });
+        return res.status(201).json({ success: true, message: 'Expense added successfully', expense });
     } catch (error) {
-        console.error('Error adding expense:', error);
-        res.status(500).json({ error: 'Failed to add expense: ' + error.message });
+        console.error('Add expense error:', error);
+        return res.status(500).json({ success: false, error: error.message || 'Failed to add expense' });
     }
 });
 
-app.get('/expenses', authenticate, async (req, res) => {
+apiRouter.get('/expenses', authenticate, async (req, res) => {
     try {
-        const expenses = await dbOperations.getAllExpenses(req.user.userId);
-        res.json(expenses);
+        const { year, month } = req.query;
+        let expenses;
+        
+        if (year && month) {
+            expenses = await dbOperations.getExpensesByMonth(year, month, req.user.userId);
+        } else {
+            expenses = await dbOperations.getAllExpenses(req.user.userId);
+        }
+        
+        return res.json({ success: true, expenses: expenses || [] });
     } catch (error) {
-        res.status(500).json({ error: 'Failed to fetch expenses' });
+        console.error('Get expenses error:', error);
+        return res.status(500).json({ success: false, error: error.message || 'Failed to fetch expenses' });
     }
 });
 
-app.delete('/expenses/:id', authenticate, async (req, res) => {
+apiRouter.get('/report', authenticate, async (req, res) => {
     try {
-        const id = parseInt(req.params.id, 10);
-        if (Number.isNaN(id)) return res.status(400).json({ error: 'Invalid id' });
-        const result = await dbOperations.deleteExpense(id, req.user.userId);
-        if (!result.deleted) return res.status(404).json({ error: 'Expense not found' });
-        res.json({ message: 'Expense deleted' });
-    } catch (error) {
-        res.status(500).json({ error: 'Failed to delete expense' });
-    }
-});
-
-app.get('/report', authenticate, async (req, res) => {
-    try {
-        const currentYear = new Date().getFullYear();
-        const currentMonth = new Date().getMonth() + 1;
-
-        const [expenses, categoryTotals, monthlyTotals] = await Promise.all([
-            dbOperations.getExpensesByMonth(currentYear, currentMonth, req.user.userId),
-            dbOperations.getCategoryTotals(currentYear, currentMonth, req.user.userId),
-            dbOperations.getMonthlyTotals(req.user.userId)
+        const now = new Date();
+        const year = req.query.year || now.getFullYear();
+        const month = req.query.month || (now.getMonth() + 1);
+        
+        const [monthlyExpenses, categoryTotals, monthlyTotals, budget] = await Promise.all([
+            dbOperations.getExpensesByMonth(year, month, req.user.userId),
+            dbOperations.getCategoryTotals(year, month, req.user.userId),
+            dbOperations.getMonthlyTotals(req.user.userId),
+            dbOperations.getUserBudget(req.user.userId)
         ]);
 
-        const totalSpending = expenses.reduce((sum, exp) => sum + exp.amount, 0);
-        const monthlyBudget = await dbOperations.getUserBudget(req.user.userId);
-        const isOverBudget = totalSpending > monthlyBudget;
+        const totalSpent = (monthlyExpenses || []).reduce((sum, exp) => sum + (parseFloat(exp.amount) || 0), 0);
+        const insights = generateInsights(monthlyExpenses || [], categoryTotals || [], monthlyTotals || []);
 
-        res.json({
-            expenses,
-            categoryTotals,
-            monthlyTotals,
-            totalSpending: Math.round(totalSpending * 100) / 100,
-            isOverBudget,
-            budgetLimit: monthlyBudget
+        return res.json({
+            success: true,
+            period: { year, month },
+            summary: {
+                totalSpent,
+                budget,
+                remainingBudget: budget - totalSpent,
+                budgetUtilization: budget > 0 ? (totalSpent / budget) * 100 : 0
+            },
+            categoryBreakdown: categoryTotals || [],
+            monthlyTrends: monthlyTotals || [],
+            insights
         });
     } catch (error) {
         console.error('Report error:', error);
-        res.status(500).json({ error: 'Failed to generate report' });
+        return res.status(500).json({ success: false, error: error.message || 'Failed to generate report' });
     }
 });
 
-app.get('/ai-insights', authenticate, async (req, res) => {
+apiRouter.get('/ai-insights', authenticate, async (req, res) => {
     try {
-        const { range, category } = req.query; 
-        
-        let expenses = await dbOperations.getAllExpenses(req.user.userId);
-        
-        if (range && range !== 'all') {
-            const now = new Date();
-            let startDate;
-            if (range === '30') {
-                startDate = new Date(now);
-                startDate.setDate(startDate.getDate() - 30);
-            } else if (range === '90') {
-                startDate = new Date(now);
-                startDate.setDate(startDate.getDate() - 90);
-            } else if (range === 'ytd') {
-                startDate = new Date(now.getFullYear(), 0, 1);
-            }
-            if (startDate) {
-                expenses = expenses.filter(exp => new Date(exp.date) >= startDate);
-            }
-        }
-        
-        if (category && category !== 'all') {
-            expenses = expenses.filter(exp => exp.category === category);
-        }
+        const [expenses, categoryTotals, monthlyTotals] = await Promise.all([
+            dbOperations.getAllExpenses(req.user.userId),
+            dbOperations.getCategoryTotals(new Date().getFullYear(), new Date().getMonth() + 1, req.user.userId),
+            dbOperations.getMonthlyTotals(req.user.userId)
+        ]);
 
-        const categoryTotalsMap = {};
-        expenses.forEach(exp => {
-            categoryTotalsMap[exp.category] = (categoryTotalsMap[exp.category] || 0) + exp.amount;
-        });
-        const categoryTotals = Object.entries(categoryTotalsMap)
-            .map(([category, total]) => ({ category, total }))
-            .sort((a, b) => b.total - a.total);
-
-        const monthlyTotalsMap = {};
-        expenses.forEach(exp => {
-            const date = new Date(exp.date);
-            const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-            monthlyTotalsMap[monthKey] = (monthlyTotalsMap[monthKey] || 0) + exp.amount;
-        });
-        const monthlyTotals = Object.entries(monthlyTotalsMap)
-            .map(([month, total]) => ({ month, total }))
-            .sort((a, b) => a.month.localeCompare(b.month))
-            .slice(-6); 
-
-        const insights = generateInsights(expenses, categoryTotals, monthlyTotals);
-        
-        insights.trendData = monthlyTotals.map(m => ({
-            label: m.month,
-            total: m.total
-        }));
-
-        res.json({ insights });
+        const insights = generateInsights(expenses || [], categoryTotals || [], monthlyTotals || []);
+        return res.json({ success: true, insights });
     } catch (error) {
-        console.error('Error generating insights:', error);
-        res.status(500).json({ error: 'Failed to generate insights' });
+        console.error('AI Insights error:', error);
+        return res.status(500).json({ success: false, error: error.message || 'Failed to generate insights' });
     }
 });
 
-app.get('/budget', authenticate, async (req, res) => {
+apiRouter.get('/budget', authenticate, async (req, res) => {
     try {
         const budget = await dbOperations.getUserBudget(req.user.userId);
-        res.json({ budget });
+        return res.json({ success: true, budget });
     } catch (error) {
-        res.status(500).json({ error: 'Failed to get budget' });
+        console.error('Get budget error:', error);
+        return res.status(500).json({ success: false, error: error.message || 'Failed to get budget' });
     }
 });
 
-app.put('/budget', authenticate, async (req, res) => {
+apiRouter.put('/budget', authenticate, async (req, res) => {
     try {
-        const { budget } = req.body;
-        if (!budget || budget < 0 || isNaN(budget)) {
-            return res.status(400).json({ error: 'Valid budget amount required' });
+        const { budget } = req.body || {};
+        if (budget === undefined || parseFloat(budget) < 0) {
+            return res.status(400).json({ success: false, error: 'Valid positive budget amount is required' });
         }
+
         await dbOperations.updateUserBudget(req.user.userId, parseFloat(budget));
-        res.json({ budget: parseFloat(budget), message: 'Budget updated successfully' });
+        return res.json({ success: true, message: 'Budget updated successfully', budget: parseFloat(budget) });
     } catch (error) {
-        res.status(500).json({ error: 'Failed to update budget' });
+        console.error('Update budget error:', error);
+        return res.status(500).json({ success: false, error: error.message || 'Failed to update budget' });
     }
 });
 
-app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'OK', 
-        message: 'TO DAR 2.O API running',
-        timestamp: new Date().toISOString(),
-        uptime: process.uptime()
+apiRouter.delete(['/expense/:id', '/expenses/:id'], authenticate, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const result = await dbOperations.deleteExpense(id, req.user.userId);
+        
+        if (!result.deleted) {
+            return res.status(404).json({ success: false, error: 'Expense not found or unauthorized' });
+        }
+
+        return res.json({ success: true, message: 'Expense deleted successfully' });
+    } catch (error) {
+        console.error('Delete expense error:', error);
+        return res.status(500).json({ success: false, error: error.message || 'Failed to delete expense' });
+    }
+});
+
+// Mount Router on BOTH '/api' and '/'
+app.use('/api', apiRouter);
+app.use('/', apiRouter);
+
+// Global 404 handler (Always returns JSON, never HTML)
+app.use((req, res) => {
+    res.status(404).json({
+        success: false,
+        error: `API endpoint not found: ${req.method} ${req.originalUrl || req.url}`,
+        code: 'ROUTE_NOT_FOUND'
     });
 });
 
-app.use((req, res) => {
-    res.status(404).json({ error: 'Route not found' });
+// Global Error Handler (Always returns JSON, never HTML)
+app.use((err, req, res, next) => {
+    console.error('Unhandled server exception:', err);
+    res.status(err.status || 500).json({
+        success: false,
+        error: err.message || 'Internal Server Error',
+        code: err.code || 'INTERNAL_ERROR'
+    });
 });
 
+// Local dev server listener
 if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
     app.listen(PORT, () => {
         console.log(`🚀 Server running on port ${PORT}`);

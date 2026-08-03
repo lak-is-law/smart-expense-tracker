@@ -137,23 +137,31 @@ async function loadDashboard() {
 
 // Update dashboard
 function updateDashboard(data) {
-    document.getElementById('totalSpending').textContent = `₹${data.totalSpending || 0}`;
-    document.getElementById('expenseCount').textContent = (data.expenses || []).length;
+    if (!data) return;
+    const summary = data.summary || {};
+    const totalSpent = summary.totalSpent !== undefined ? summary.totalSpent : (data.totalSpending || 0);
+    const limit = summary.budget !== undefined ? summary.budget : (data.budgetLimit || 5000);
+    const expensesList = data.expenses || data.monthlyExpenses || [];
+    const categoryTotals = data.categoryBreakdown || data.categoryTotals || [];
+    const monthlyTotals = data.monthlyTrends || data.monthlyTotals || [];
+
+    document.getElementById('totalSpending').textContent = `₹${totalSpent}`;
+    document.getElementById('expenseCount').textContent = expensesList.length;
     
-    const limit = data.budgetLimit || 5000;
-    const progress = Math.min(100, Math.round(((data.totalSpending || 0) / limit) * 100));
+    const progress = limit > 0 ? Math.min(100, Math.round((totalSpent / limit) * 100)) : 0;
     document.getElementById('budgetProgress').textContent = `${progress}%`;
     document.getElementById('budgetLimitLabel').textContent = `Limit: ₹${limit}`;
 
-    if (data.isOverBudget) {
+    const isOverBudget = totalSpent > limit;
+    if (isOverBudget) {
         document.getElementById('warningBanner').style.display = 'flex';
-        document.getElementById('warningText').textContent = `Monthly spending (₹${data.totalSpending}) exceeds budget of ₹${limit}!`;
+        document.getElementById('warningText').textContent = `Monthly spending (₹${totalSpent}) exceeds budget of ₹${limit}!`;
     } else {
         document.getElementById('warningBanner').style.display = 'none';
     }
 
-    updateCategoryList(data.categoryTotals || []);
-    updateTrendList(data.monthlyTotals || []);
+    updateCategoryList(categoryTotals);
+    updateTrendList(monthlyTotals);
 }
 
 // Update category list

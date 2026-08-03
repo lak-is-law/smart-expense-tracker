@@ -2,52 +2,66 @@ const sqlite3 = require('sqlite3').verbose();
 const mysql = require('mysql2/promise');
 const { Pool } = require('pg');
 const path = require('path');
+const fs = require('fs');
 require('dotenv').config();
+
+// Determine serverless/read-only environment
+const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.LAMBDA_TASK_ROOT);
+
+// Determine SQLite storage location safely
+const defaultSqlitePath = isServerless 
+    ? path.join('/tmp', 'expenses.db') 
+    : path.join(__dirname, '../../data/expenses.db');
+
+// Ensure parent directory exists for SQLite
+try {
+    const dir = path.dirname(defaultSqlitePath);
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+} catch (err) {
+    console.warn('⚠️ Could not create SQLite directory:', err.message);
+}
 
 // Database configuration
 const DB_CONFIG = {
-    type: process.env.DB_TYPE || 'sqlite', // sqlite, mysql, postgresql
+    type: (process.env.DATABASE_URL || process.env.POSTGRES_URL) ? 'postgresql' : (process.env.DB_TYPE || 'sqlite'),
     sqlite: {
-        path: path.join(__dirname, '../../data/expenses.db')
+        path: process.env.SQLITE_PATH || defaultSqlitePath
     },
     mysql: {
         host: process.env.MYSQL_HOST || 'localhost',
-        port: process.env.MYSQL_PORT || 3306,
+        port: parseInt(process.env.MYSQL_PORT, 10) || 3306,
         user: process.env.MYSQL_USER || 'root',
         password: process.env.MYSQL_PASSWORD || '',
         database: process.env.MYSQL_DATABASE || 'expense_tracker',
         connectionLimit: 10
     },
     postgresql: {
+        connectionString: process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.POSTGRES_PRISMA_URL,
         host: process.env.PG_HOST || 'localhost',
-        port: process.env.PG_PORT || 5432,
+        port: parseInt(process.env.PG_PORT, 10) || 5432,
         user: process.env.PG_USER || 'postgres',
         password: process.env.PG_PASSWORD || '',
         database: process.env.PG_DATABASE || 'expense_tracker',
-        max: 10
+        max: 10,
+        ssl: (process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.NODE_ENV === 'production') 
+            ? { rejectUnauthorized: false } 
+            : false
     }
 };
-
-// Use DATABASE_URL if available (for Vercel Postgres / Neon / Supabase / Render)
-if (process.env.DATABASE_URL) {
-    DB_CONFIG.type = 'postgresql';
-    DB_CONFIG.postgresql = {
-        connectionString: process.env.DATABASE_URL,
-        ssl: {
-            rejectUnauthorized: false
-        }
-    };
-}
 
 class DatabaseManager {
     constructor() {
         this.db = null;
         this.type = DB_CONFIG.type;
-        this.initializeDatabase();
+        this.isInitialized = false;
+        this.ready = this.initializeDatabase();
     }
 
     async initializeDatabase() {
         try {
+            console.log(`🔌 Initializing database [Type: ${this.type.toUpperCase()}]...`);
             switch (this.type) {
                 case 'sqlite':
                     await this.initializeSQLite();
@@ -63,13 +77,18 @@ class DatabaseManager {
             }
             console.log(`✅ Connected to ${this.type.toUpperCase()} database`);
             await this.createTables();
+            this.isInitialized = true;
         } catch (error) {
             console.error('❌ Database initialization failed:', error.message);
             if (this.type !== 'sqlite') {
-                console.log('🔄 Falling back to SQLite...');
+                console.log('🔄 Falling back to SQLite in /tmp...');
                 this.type = 'sqlite';
+                DB_CONFIG.sqlite.path = path.join('/tmp', 'expenses.db');
                 await this.initializeSQLite();
                 await this.createTables();
+                this.isInitialized = true;
+            } else {
+                throw error;
             }
         }
     }
@@ -78,8 +97,10 @@ class DatabaseManager {
         return new Promise((resolve, reject) => {
             this.db = new sqlite3.Database(DB_CONFIG.sqlite.path, (err) => {
                 if (err) {
+                    console.error('SQLite connection error:', err);
                     reject(err);
                 } else {
+                    console.log(`SQLite database open at: ${DB_CONFIG.sqlite.path}`);
                     resolve();
                 }
             });
@@ -92,8 +113,18 @@ class DatabaseManager {
     }
 
     async initializePostgreSQL() {
-        this.db = new Pool(DB_CONFIG.postgresql);
-        console.log('PostgreSQL connection pool created');
+        if (DB_CONFIG.postgresql.connectionString) {
+            this.db = new Pool({
+                connectionString: DB_CONFIG.postgresql.connectionString,
+                ssl: DB_CONFIG.postgresql.ssl
+            });
+        } else {
+            this.db = new Pool(DB_CONFIG.postgresql);
+        }
+        // Verify connection
+        const client = await this.db.connect();
+        client.release();
+        console.log('PostgreSQL connection pool verified');
     }
 
     async createTables() {
@@ -142,8 +173,6 @@ class DatabaseManager {
             if (this.type === 'sqlite') {
                 await this.runSQLite(createUsersSQL);
                 await this.runSQLite(createExpensesSQL);
-                // Ensure user_id column exists if table was created previously without it
-                await this.runSQLite("ALTER TABLE expenses ADD COLUMN user_id TEXT", []).catch(() => {});
             } else if (this.type === 'mysql') {
                 await this.db.execute(createUsersSQL);
                 await this.db.execute(createExpensesSQL);
@@ -157,56 +186,71 @@ class DatabaseManager {
         }
     }
 
-    // ---- User & Budget Operations ----
+    // ---- User Operations ----
     async createUser(user) {
+        await this.ready;
         try {
+            const userId = user.userId || user.id;
+            const passwordHash = user.passwordHash || user.password_hash || null;
+
             if (this.type === 'sqlite') {
                 return new Promise((resolve, reject) => {
                     const stmt = this.db.prepare(`INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)`);
-                    stmt.run([user.userId, user.email, user.name, user.passwordHash || null], function(err) {
-                        if (err) reject(err); else resolve(user);
+                    stmt.run([userId, user.email, user.name, passwordHash], function(err) {
+                        if (err) return reject(err);
+                        resolve({
+                            id: userId,
+                            userId: userId,
+                            email: user.email,
+                            name: user.name
+                        });
                     });
                     stmt.finalize();
                 });
             } else if (this.type === 'mysql') {
                 await this.db.execute(
                     "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)",
-                    [user.userId, user.email, user.name, user.passwordHash || null]
+                    [userId, user.email, user.name, passwordHash]
                 );
-                return user;
+                return { id: userId, userId, email: user.email, name: user.name };
             } else if (this.type === 'postgresql') {
                 await this.db.query(
                     "INSERT INTO users (id, email, name, password_hash) VALUES ($1, $2, $3, $4)",
-                    [user.userId, user.email, user.name, user.passwordHash || null]
+                    [userId, user.email, user.name, passwordHash]
                 );
-                return user;
+                return { id: userId, userId, email: user.email, name: user.name };
             }
         } catch (error) {
+            console.error('createUser DB error:', error.message);
             throw error;
         }
     }
 
     async getUserByEmail(email) {
+        await this.ready;
         try {
+            const normalizedEmail = (email || '').trim().toLowerCase();
             if (this.type === 'sqlite') {
                 return new Promise((resolve, reject) => {
-                    this.db.get("SELECT * FROM users WHERE email = ?", [email], (err, row) => {
-                        if (err) reject(err); else resolve(row);
+                    this.db.get("SELECT * FROM users WHERE LOWER(email) = LOWER(?)", [normalizedEmail], (err, row) => {
+                        if (err) reject(err); else resolve(row || null);
                     });
                 });
             } else if (this.type === 'mysql') {
-                const [rows] = await this.db.execute("SELECT * FROM users WHERE email = ?", [email]);
-                return rows[0];
+                const [rows] = await this.db.execute("SELECT * FROM users WHERE LOWER(email) = LOWER(?)", [normalizedEmail]);
+                return rows[0] || null;
             } else if (this.type === 'postgresql') {
-                const result = await this.db.query("SELECT * FROM users WHERE email = $1", [email]);
-                return result.rows[0];
+                const result = await this.db.query("SELECT * FROM users WHERE LOWER(email) = LOWER($1)", [normalizedEmail]);
+                return result.rows[0] || null;
             }
         } catch (error) {
+            console.error('getUserByEmail DB error:', error.message);
             throw error;
         }
     }
 
     async updateUserBudget(userId, budget) {
+        await this.ready;
         try {
             if (this.type === 'sqlite') {
                 return new Promise((resolve, reject) => {
@@ -222,11 +266,13 @@ class DatabaseManager {
                 await this.db.query("UPDATE users SET monthly_budget = $1 WHERE id = $2", [budget, userId]);
             }
         } catch (error) {
+            console.error('updateUserBudget error:', error.message);
             throw error;
         }
     }
 
     async getUserBudget(userId) {
+        await this.ready;
         try {
             if (this.type === 'sqlite') {
                 return new Promise((resolve, reject) => {
@@ -242,13 +288,14 @@ class DatabaseManager {
                 return result.rows[0] ? parseFloat(result.rows[0].monthly_budget) : 5000;
             }
         } catch (error) {
-            console.error('Error getting user budget:', error.message);
+            console.error('getUserBudget error:', error.message);
             return 5000;
         }
     }
 
     // ---- Expense Operations ----
     async addExpense(expense) {
+        await this.ready;
         try {
             if (this.type === 'sqlite') {
                 return new Promise((resolve, reject) => {
@@ -256,7 +303,6 @@ class DatabaseManager {
                         INSERT INTO expenses (date, category, amount, description, user_id)
                         VALUES (?, ?, ?, ?, ?)
                     `);
-                    
                     stmt.run([expense.date, expense.category, expense.amount, expense.description, expense.user_id], function(err) {
                         if (err) {
                             reject(err);
@@ -264,7 +310,6 @@ class DatabaseManager {
                             resolve({ id: this.lastID, ...expense });
                         }
                     });
-                    
                     stmt.finalize();
                 });
             } else if (this.type === 'mysql') {
@@ -281,17 +326,18 @@ class DatabaseManager {
                 return { id: result.rows[0].id, ...expense };
             }
         } catch (error) {
+            console.error('addExpense error:', error.message);
             throw error;
         }
     }
 
     async getAllExpenses(userId) {
+        await this.ready;
         try {
             if (this.type === 'sqlite') {
                 return new Promise((resolve, reject) => {
                     this.db.all("SELECT * FROM expenses WHERE user_id = ? ORDER BY date DESC", [userId], (err, rows) => {
-                        if (err) reject(err);
-                        else resolve(rows || []);
+                        if (err) reject(err); else resolve(rows || []);
                     });
                 });
             } else if (this.type === 'mysql') {
@@ -302,11 +348,13 @@ class DatabaseManager {
                 return result.rows || [];
             }
         } catch (error) {
+            console.error('getAllExpenses error:', error.message);
             throw error;
         }
     }
 
     async getExpensesByMonth(year, month, userId) {
+        await this.ready;
         try {
             const monthStr = month.toString().padStart(2, '0');
             const yearMonth = `${year}-${monthStr}`;
@@ -317,8 +365,7 @@ class DatabaseManager {
                         "SELECT * FROM expenses WHERE date LIKE ? AND user_id = ? ORDER BY date DESC",
                         [`${yearMonth}%`, userId],
                         (err, rows) => {
-                            if (err) reject(err);
-                            else resolve(rows || []);
+                            if (err) reject(err); else resolve(rows || []);
                         }
                     );
                 });
@@ -336,11 +383,13 @@ class DatabaseManager {
                 return result.rows || [];
             }
         } catch (error) {
+            console.error('getExpensesByMonth error:', error.message);
             throw error;
         }
     }
 
     async getCategoryTotals(year, month, userId) {
+        await this.ready;
         try {
             const monthStr = month.toString().padStart(2, '0');
             const yearMonth = `${year}-${monthStr}`;
@@ -355,8 +404,7 @@ class DatabaseManager {
                          ORDER BY total DESC`,
                         [`${yearMonth}%`, userId],
                         (err, rows) => {
-                            if (err) reject(err);
-                            else resolve(rows || []);
+                            if (err) reject(err); else resolve(rows || []);
                         }
                     );
                 });
@@ -372,7 +420,7 @@ class DatabaseManager {
                 return rows || [];
             } else if (this.type === 'postgresql') {
                 const result = await this.db.query(
-                    `SELECT category, SUM(amount) as total
+                    `SELECT category, SUM(amount)::float as total
                      FROM expenses 
                      WHERE date::text LIKE $1 AND user_id = $2
                      GROUP BY category 
@@ -382,27 +430,28 @@ class DatabaseManager {
                 return result.rows || [];
             }
         } catch (error) {
+            console.error('getCategoryTotals error:', error.message);
             throw error;
         }
     }
 
     async getMonthlyTotals(userId) {
+        await this.ready;
         try {
             if (this.type === 'sqlite') {
                 return new Promise((resolve, reject) => {
                     this.db.all(
                         `SELECT 
-                            strftime('%Y-%m', date) as month,
+                            substr(date, 1, 7) as month,
                             SUM(amount) as total
                          FROM expenses 
                          WHERE user_id = ?
-                         GROUP BY strftime('%Y-%m', date)
+                         GROUP BY substr(date, 1, 7)
                          ORDER BY month DESC
                          LIMIT 6`,
                         [userId],
                         (err, rows) => {
-                            if (err) reject(err);
-                            else resolve(rows || []);
+                            if (err) reject(err); else resolve(rows || []);
                         }
                     );
                 });
@@ -423,7 +472,7 @@ class DatabaseManager {
                 const result = await this.db.query(
                     `SELECT 
                         TO_CHAR(date, 'YYYY-MM') as month,
-                        SUM(amount) as total
+                        SUM(amount)::float as total
                      FROM expenses 
                      WHERE user_id = $1
                      GROUP BY TO_CHAR(date, 'YYYY-MM')
@@ -434,17 +483,18 @@ class DatabaseManager {
                 return result.rows || [];
             }
         } catch (error) {
+            console.error('getMonthlyTotals error:', error.message);
             throw error;
         }
     }
 
     async deleteExpense(id, userId) {
+        await this.ready;
         try {
             if (this.type === 'sqlite') {
                 return new Promise((resolve, reject) => {
                     this.db.run("DELETE FROM expenses WHERE id = ? AND user_id = ?", [id, userId], function(err) {
-                        if (err) reject(err);
-                        else resolve({ deleted: this.changes > 0 });
+                        if (err) reject(err); else resolve({ deleted: this.changes > 0 });
                     });
                 });
             } else if (this.type === 'mysql') {
@@ -455,6 +505,7 @@ class DatabaseManager {
                 return { deleted: result.rowCount > 0 };
             }
         } catch (error) {
+            console.error('deleteExpense error:', error.message);
             throw error;
         }
     }
@@ -462,19 +513,18 @@ class DatabaseManager {
     async runSQLite(sql, params = []) {
         return new Promise((resolve, reject) => {
             this.db.run(sql, params, function(err) {
-                if (err) reject(err);
-                else resolve(this);
+                if (err) reject(err); else resolve(this);
             });
         });
     }
 
     async close() {
         try {
-            if (this.type === 'sqlite') {
+            if (this.type === 'sqlite' && this.db) {
                 this.db.close();
-            } else if (this.type === 'mysql') {
+            } else if (this.type === 'mysql' && this.db) {
                 await this.db.end();
-            } else if (this.type === 'postgresql') {
+            } else if (this.type === 'postgresql' && this.db) {
                 await this.db.end();
             }
             console.log('Database connection closed');
@@ -498,7 +548,8 @@ const dbOperations = {
     getExpensesByMonth: (year, month, userId) => dbManager.getExpensesByMonth(year, month, userId),
     getCategoryTotals: (year, month, userId) => dbManager.getCategoryTotals(year, month, userId),
     getMonthlyTotals: (userId) => dbManager.getMonthlyTotals(userId),
-    deleteExpense: (id, userId) => dbManager.deleteExpense(id, userId)
+    deleteExpense: (id, userId) => dbManager.deleteExpense(id, userId),
+    ready: dbManager.ready
 };
 
 module.exports = { dbManager, dbOperations };

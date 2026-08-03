@@ -561,15 +561,78 @@
                     window.location.hostname === '127.0.0.1' ||
                     window.location.port !== ''
                 ) {
-                    return 'http://localhost:3000';
+                    return 'http://localhost:3000/api';
                 }
                 return window.location.origin.replace(/\/+$/, '') + '/api';
             } catch (_) {
-                return 'http://localhost:3000';
+                return 'http://localhost:3000/api';
             }
         }
 
         const API_BASE = getApiBase();
+
+        // Universal Robust API Request Helper
+        async function apiRequest(endpoint, options = {}) {
+            const url = endpoint.startsWith('http') ? endpoint : `${API_BASE}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
+            const method = options.method || 'GET';
+            
+            console.log(`[API Request] ${method} -> ${url}`);
+            if (options.body) {
+                try {
+                    const parsed = JSON.parse(options.body);
+                    const debugPayload = { ...parsed };
+                    if (debugPayload.password) debugPayload.password = '***';
+                    if (debugPayload.idToken) debugPayload.idToken = '***';
+                    console.log('[API Payload]:', debugPayload);
+                } catch (_) {}
+            }
+
+            try {
+                const response = await fetch(url, {
+                    ...options,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...(options.headers || {})
+                    }
+                });
+
+                const contentType = response.headers.get('content-type') || '';
+                let result = null;
+
+                if (contentType.includes('application/json')) {
+                    result = await response.json();
+                } else {
+                    const rawText = await response.text();
+                    console.warn(`[API Non-JSON Response] HTTP ${response.status} from ${url}:`, rawText.slice(0, 300));
+                    result = {
+                        success: false,
+                        error: `Unexpected server response (HTTP ${response.status}). If using Vercel, check function logs.`,
+                        code: `HTTP_${response.status}`,
+                        raw: rawText
+                    };
+                }
+
+                console.log(`[API Response] HTTP ${response.status} from ${url}:`, result);
+
+                return {
+                    ok: response.ok,
+                    status: response.status,
+                    data: result
+                };
+
+            } catch (networkErr) {
+                console.error(`[API Network Error] ${method} ${url}:`, networkErr);
+                return {
+                    ok: false,
+                    status: 0,
+                    data: {
+                        success: false,
+                        error: 'Could not connect to the backend server. Please check your internet connection or server status.',
+                        code: 'NETWORK_ERROR'
+                    }
+                };
+            }
+        }
 
         function switchAuthTab(mode) {
             hideAlert();
@@ -677,7 +740,7 @@
             initGoogleIdentity();
         });
 
-        // Login Handler
+        // Login Form Handler
         document.getElementById('loginForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             hideAlert();
@@ -697,67 +760,52 @@
             btn.disabled = true;
             btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Verifying...';
 
-            try {
-                const res = await fetch(`${API_BASE}/auth/login`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ email, password })
-                });
+            const { ok, status, data } = await apiRequest('/auth/login', {
+                method: 'POST',
+                body: JSON.stringify({ email, password })
+            });
 
-                const data = await res.json().catch(() => ({ error: 'Invalid response from server' }));
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-arrow-right-to-bracket"></i> Sign In';
 
-                if (!res.ok) {
-                    if (data.code === 'USER_NOT_FOUND' || res.status === 404) {
-                        showAlert(
-                            `<strong>Account not found!</strong> No user is registered with <code>${email}</code>.`,
-                            'error',
-                            {
-                                text: 'Create Account with this Email',
-                                callback: () => {
-                                    switchAuthTab('signup');
-                                    document.getElementById('signupEmail').value = email;
-                                    document.getElementById('signupName').focus();
-                                }
+            if (!ok || !data.success) {
+                if (data.code === 'USER_NOT_FOUND' || status === 404) {
+                    showAlert(
+                        `<strong>Account not found!</strong> No user is registered with <code>${email}</code>.`,
+                        'error',
+                        {
+                            text: 'Create Account with this Email',
+                            callback: () => {
+                                switchAuthTab('signup');
+                                document.getElementById('signupEmail').value = email;
+                                document.getElementById('signupName').focus();
                             }
-                        );
-                        btn.disabled = false;
-                        btn.innerHTML = '<i class="fas fa-arrow-right-to-bracket"></i> Sign In';
-                        return;
-                    }
-
-                    if (data.code === 'GOOGLE_AUTH_REQUIRED') {
-                        showAlert(data.error || 'This account uses Google Sign-In.');
-                        btn.disabled = false;
-                        btn.innerHTML = '<i class="fas fa-arrow-right-to-bracket"></i> Sign In';
-                        return;
-                    }
-
-                    if (data.code === 'INVALID_PASSWORD') {
-                        showAlert('<strong>Incorrect password.</strong> Please double-check your password.');
-                        btn.disabled = false;
-                        btn.innerHTML = '<i class="fas fa-arrow-right-to-bracket"></i> Sign In';
-                        return;
-                    }
-
-                    throw new Error(data.error || 'Login failed');
+                        }
+                    );
+                    return;
                 }
 
-                showAlert('Sign in successful! Redirecting...', 'success');
-                localStorage.setItem('authToken', data.token);
-                localStorage.setItem('authUser', JSON.stringify(data.user));
-                setTimeout(() => { window.location.href = 'index.html'; }, 600);
+                if (data.code === 'GOOGLE_AUTH_REQUIRED') {
+                    showAlert(data.error || 'This account uses Google Sign-In. Please click the button below.');
+                    return;
+                }
 
-            } catch (err) {
-                const msg = (err.message && !err.message.includes('pattern') && !err.message.includes('fetch')) 
-                    ? err.message 
-                    : 'Could not connect to backend server. Please make sure the backend is running (run: npm start).';
-                showAlert(msg);
-                btn.disabled = false;
-                btn.innerHTML = '<i class="fas fa-arrow-right-to-bracket"></i> Sign In';
+                if (data.code === 'INVALID_PASSWORD' || status === 401) {
+                    showAlert('<strong>Incorrect password.</strong> Please double-check your password and try again.');
+                    return;
+                }
+
+                showAlert(data.error || 'Login failed. Please check your credentials.');
+                return;
             }
+
+            showAlert('Sign in successful! Redirecting to dashboard...', 'success');
+            localStorage.setItem('authToken', data.token);
+            localStorage.setItem('authUser', JSON.stringify(data.user));
+            setTimeout(() => { window.location.href = 'index.html'; }, 500);
         });
 
-        // Signup Handler
+        // Signup Form Handler
         document.getElementById('signupForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             hideAlert();
@@ -773,88 +821,74 @@
             }
 
             if (password.length < 6) {
-                showAlert('Password must be at least 6 characters.');
+                showAlert('Password must be at least 6 characters long.');
                 return;
             }
 
             btn.disabled = true;
             btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating Account...';
 
-            try {
-                const res = await fetch(`${API_BASE}/auth/signup`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, email, password })
-                });
+            const { ok, status, data } = await apiRequest('/auth/signup', {
+                method: 'POST',
+                body: JSON.stringify({ name, email, password })
+            });
 
-                const data = await res.json().catch(() => ({ error: 'Invalid response from server' }));
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-user-plus"></i> Create Account';
 
-                if (!res.ok) {
-                    if (res.status === 409) {
-                        showAlert(
-                            `<strong>Account already exists!</strong> An account with <code>${email}</code> is already registered.`,
-                            'error',
-                            {
-                                text: 'Sign In Instead',
-                                callback: () => {
-                                    switchAuthTab('login');
-                                    document.getElementById('loginEmail').value = email;
-                                    document.getElementById('loginPassword').focus();
-                                }
+            if (!ok || !data.success) {
+                if (data.code === 'USER_EXISTS' || status === 409) {
+                    showAlert(
+                        `<strong>Account already exists!</strong> An account with <code>${email}</code> is already registered.`,
+                        'error',
+                        {
+                            text: 'Sign In Instead',
+                            callback: () => {
+                                switchAuthTab('login');
+                                document.getElementById('loginEmail').value = email;
+                                document.getElementById('loginPassword').focus();
                             }
-                        );
-                        btn.disabled = false;
-                        btn.innerHTML = '<i class="fas fa-user-plus"></i> Create Account';
-                        return;
-                    }
-                    throw new Error(data.error || 'Signup failed');
+                        }
+                    );
+                    return;
                 }
 
-                showAlert('🎉 Account created successfully! Launching dashboard...', 'success');
-                localStorage.setItem('authToken', data.token);
-                localStorage.setItem('authUser', JSON.stringify(data.user));
-                setTimeout(() => { window.location.href = 'index.html'; }, 800);
-
-            } catch (err) {
-                const msg = (err.message && !err.message.includes('pattern') && !err.message.includes('fetch'))
-                    ? err.message
-                    : 'Could not connect to backend server. Please make sure the backend is running (run: npm start).';
-                showAlert(msg);
-                btn.disabled = false;
-                btn.innerHTML = '<i class="fas fa-user-plus"></i> Create Account';
+                showAlert(data.error || 'Could not complete signup. Please try again.');
+                return;
             }
+
+            showAlert('🎉 Account created successfully! Loading your dashboard...', 'success');
+            localStorage.setItem('authToken', data.token);
+            localStorage.setItem('authUser', JSON.stringify(data.user));
+            setTimeout(() => { window.location.href = 'index.html'; }, 600);
         });
 
-        // Google Sign In Handler
+        // Google Sign In Callback Handler
         async function handleGoogleSignIn(response) {
             if (!response || !response.credential) {
                 showAlert('Google authentication was cancelled or failed.');
                 return;
             }
 
-            try {
-                showAlert('Verifying Google credentials...', 'success');
-                const res = await fetch(`${API_BASE}/auth/google`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ idToken: response.credential })
-                });
+            showAlert('Verifying Google credentials with server...', 'success');
 
-                const data = await res.json().catch(() => ({ error: 'Google verification failed' }));
-                if (!res.ok) throw new Error(data.error || 'Google token verification failed');
+            const { ok, data } = await apiRequest('/auth/google', {
+                method: 'POST',
+                body: JSON.stringify({ idToken: response.credential })
+            });
 
-                showAlert('Google Sign-In successful! Loading dashboard...', 'success');
-                localStorage.setItem('authToken', data.token);
-                localStorage.setItem('authUser', JSON.stringify(data.user));
-                setTimeout(() => { window.location.href = 'index.html'; }, 600);
-            } catch (err) {
-                const msg = (err.message && !err.message.includes('pattern') && !err.message.includes('fetch'))
-                    ? err.message
-                    : 'Could not connect to backend server for Google verification. Please start the server (run: npm start).';
-                showAlert(msg);
+            if (!ok || !data.success) {
+                showAlert(data.error || 'Google authentication failed on server.');
+                return;
             }
+
+            showAlert('Google Sign-In successful! Loading dashboard...', 'success');
+            localStorage.setItem('authToken', data.token);
+            localStorage.setItem('authUser', JSON.stringify(data.user));
+            setTimeout(() => { window.location.href = 'index.html'; }, 500);
         }
 
+        // Auto redirect if already authenticated
         if (localStorage.getItem('authToken')) {
             window.location.href = 'index.html';
         }
