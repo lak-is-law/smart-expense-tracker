@@ -148,28 +148,40 @@ app.post('/auth/login', async (req, res) => {
     try {
         const { email, password } = req.body;
         if (!email || !password) {
-            return res.status(400).json({ error: 'Email and password required' });
+            return res.status(400).json({ error: 'Email and password are required', code: 'MISSING_FIELDS' });
         }
 
-        const user = await dbOperations.getUserByEmail(email);
+        const trimmedEmail = email.trim().toLowerCase();
+        const user = await dbOperations.getUserByEmail(trimmedEmail);
+        
         if (!user) {
-            return res.status(401).json({ error: 'Invalid email or password' });
+            return res.status(404).json({ 
+                error: 'No account found with this email address. Please check your spelling or create a new account.', 
+                code: 'USER_NOT_FOUND',
+                email: trimmedEmail
+            });
         }
 
         if (!user.password_hash) {
-            return res.status(401).json({ error: 'Account registered with Google. Please sign in with Google.' });
+            return res.status(400).json({ 
+                error: 'This email is linked to Google Sign-In. Please click "Sign in with Google" below.', 
+                code: 'GOOGLE_AUTH_REQUIRED' 
+            });
         }
 
         const isMatch = await bcrypt.compare(password, user.password_hash);
         if (!isMatch) {
-            return res.status(401).json({ error: 'Invalid email or password' });
+            return res.status(401).json({ 
+                error: 'Incorrect password. Please double-check your password and try again.', 
+                code: 'INVALID_PASSWORD' 
+            });
         }
 
         const token = createJwt(user);
         res.json({ token, user: { userId: user.id, email: user.email, name: user.name } });
     } catch (error) {
         console.error('Login error:', error);
-        res.status(500).json({ error: error.message || 'Login failed' });
+        res.status(500).json({ error: error.message || 'Login failed. Please try again.' });
     }
 });
 
