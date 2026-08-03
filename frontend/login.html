@@ -238,7 +238,6 @@
             color: var(--primary);
         }
 
-        /* FIX BROWSER AUTOFILL STYLING BUG (White background on autofill) */
         input:-webkit-autofill,
         input:-webkit-autofill:hover, 
         input:-webkit-autofill:focus, 
@@ -492,18 +491,7 @@
                 </div>
 
                 <div class="google-auth-box">
-                    <div id="g_id_onload"
-                         data-client_id="941885758128-8jqljgv97qt7mtnkl9oi15qu8nglamci.apps.googleusercontent.com"
-                         data-callback="handleGoogleSignIn"
-                         data-auto_prompt="false"></div>
-                    <div class="g_id_signin" 
-                         data-type="standard" 
-                         data-size="large" 
-                         data-theme="filled_blue" 
-                         data-text="signin_with" 
-                         data-shape="pill" 
-                         data-logo_alignment="left"
-                         data-width="340"></div>
+                    <div id="googleBtnLogin"></div>
                 </div>
             </div>
 
@@ -552,18 +540,7 @@
                 </div>
 
                 <div class="google-auth-box">
-                    <div id="g_id_onload_signup"
-                         data-client_id="941885758128-8jqljgv97qt7mtnkl9oi15qu8nglamci.apps.googleusercontent.com"
-                         data-callback="handleGoogleSignIn"
-                         data-auto_prompt="false"></div>
-                    <div class="g_id_signin" 
-                         data-type="standard" 
-                         data-size="large" 
-                         data-theme="filled_blue" 
-                         data-text="signup_with" 
-                         data-shape="pill" 
-                         data-logo_alignment="left"
-                         data-width="340"></div>
+                    <div id="googleBtnSignup"></div>
                 </div>
             </div>
 
@@ -571,7 +548,9 @@
     </div>
 
     <script>
-        // Robust API URL Resolution for file://, Live Server, localhost, and Vercel
+        const GOOGLE_CLIENT_ID = '941885758128-8jqljgv97qt7mtnkl9oi15qu8nglamci.apps.googleusercontent.com';
+
+        // Robust API URL Resolution
         function getApiBase() {
             try {
                 if (
@@ -651,6 +630,52 @@
             const alertBox = document.getElementById('authAlert');
             if (alertBox) alertBox.style.display = 'none';
         }
+
+        // Initialize Google Sign-In Programmatically
+        function initGoogleIdentity() {
+            if (window.google && google.accounts && google.accounts.id) {
+                try {
+                    google.accounts.id.initialize({
+                        client_id: GOOGLE_CLIENT_ID,
+                        callback: handleGoogleSignIn,
+                        auto_select: false,
+                        cancel_on_tap_outside: true
+                    });
+
+                    const loginTarget = document.getElementById('googleBtnLogin');
+                    if (loginTarget) {
+                        google.accounts.id.renderButton(loginTarget, {
+                            theme: 'filled_blue',
+                            size: 'large',
+                            shape: 'pill',
+                            text: 'signin_with',
+                            width: 320,
+                            logo_alignment: 'left'
+                        });
+                    }
+
+                    const signupTarget = document.getElementById('googleBtnSignup');
+                    if (signupTarget) {
+                        google.accounts.id.renderButton(signupTarget, {
+                            theme: 'filled_blue',
+                            size: 'large',
+                            shape: 'pill',
+                            text: 'signup_with',
+                            width: 320,
+                            logo_alignment: 'left'
+                        });
+                    }
+                } catch (e) {
+                    console.warn('Google Identity initialization error:', e);
+                }
+            } else {
+                setTimeout(initGoogleIdentity, 200);
+            }
+        }
+
+        window.addEventListener('load', () => {
+            initGoogleIdentity();
+        });
 
         // Login Handler
         document.getElementById('loginForm').addEventListener('submit', async (e) => {
