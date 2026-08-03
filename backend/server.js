@@ -20,9 +20,14 @@ app.use(cors({
 }));
 app.use(bodyParser.json());
 
-// Debug middleware - log all requests
+// Normalize /api prefix for Vercel serverless deployment
 app.use((req, res, next) => {
-    console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+    if (req.url.startsWith('/api/')) {
+        req.url = req.url.slice(4);
+    } else if (req.url === '/api') {
+        req.url = '/';
+    }
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.path} (Original: ${req.originalUrl || req.url})`);
     next();
 });
 
